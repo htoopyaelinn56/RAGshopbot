@@ -1,0 +1,11 @@
+node_modules/
+.env
+.env.*
+!.env.example
+.cache/
+.DS_Store
+
+# Local tooling state — not part of the project
+.agents/
+.claude/
+skills-lock.json
