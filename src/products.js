@@ -1,6 +1,7 @@
-// 100 realistic clothing products for seeding.
-// `text` is what gets embedded (semantic search); price/stock stay structured.
-// Some items have stock=0 so the in-stock filter is visible during testing.
+// Seed catalog the indexer (npm run index) reads from.
+// `text` is what gets embedded for semantic search; price/stock stay structured
+// columns in Supabase so they can be updated without re-embedding.
+// Some items intentionally have stock=0 to demonstrate the in-stock filter.
 
 export const products = [
   // --- Men's tops (1-12) ---

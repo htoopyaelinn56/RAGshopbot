@@ -1,13 +1,13 @@
-// One-time indexer.
-//   Step A: write the catalog (products table — source of truth).
-//   Step B: embed name+description and write product_embeddings.
+// One-time indexer — seeds Supabase from src/products.js.
+//   Step A: write the catalog into the products table (source of truth).
+//   Step B: embed name+description and write into product_embeddings.
+// Idempotent: wipes both tables (FK cascade) and reinserts on every run.
+//
+//   npm run index
 //
 // In production these become two separate scripts:
 //   - sync catalog (price/stock updates) -> Step A only, NEVER re-embeds.
 //   - reindex description changes        -> Step B only.
-// For dev we do both, idempotently (wipe + reinsert).
-//
-//   npm run index
 
 import { products } from './products.js';
 import { embeddings } from './embed.js';

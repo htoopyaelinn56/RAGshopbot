@@ -1,30 +1,39 @@
-// Step 3 + Step 4 polish — Telegram bot.
+// Telegram bot entry point.
 // Flow per message:
-//   1. LLM extracts {maxPrice, inStockOnly} from the question.
-//   2. Hybrid search runs with those filters.
-//   3. If retrieval is empty -> short-circuit, no LLM reply call.
-//   4. Otherwise, LLM writes the grounded reply.
-// Both LLM calls are wrapped in withRateRetry (one delayed retry on 429).
+//   1. interpretMessage (LLM) rewrites the query using chat memory and
+//      extracts {maxPrice, inStockOnly}.
+//   2. Hybrid search runs against Supabase with those filters.
+//   3. askLLM (LLM) writes a grounded reply using retrieved products
+//      AND the shop info loaded from about_shop.md.
+// Both LLM calls are wrapped in withRateRetry (one delayed retry on
+// transient errors / rate limits).
+//
 //   npm run bot
 
 import 'dotenv/config';
 import { Telegraf } from 'telegraf';
 import { hybridSearch } from './search.js';
-import { askLLM, extractFilters, withRateRetry } from './llm.js';
+import { askLLM, interpretMessage, withRateRetry } from './llm.js';
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 if (!token) throw new Error('TELEGRAM_BOT_TOKEN is not set in .env');
 
 const bot = new Telegraf(token);
 
-bot.start((ctx) =>
-  ctx.reply(
-    "Hi! I'm a shop assistant. Ask me about our clothing — try things like\n" +
-    "  • \"something warm for winter\"\n" +
-    "  • \"running shoes under $50\"\n" +
-    "  • \"a dress for a wedding\""
-  )
-);
+// Per-chat conversation history. In-memory only; resets on restart.
+// Keys: chat.id  -> Values: array of {role, content} alternating user/assistant.
+const histories = new Map();
+const MAX_HISTORY = 6; // 3 user/assistant turn pairs
+
+bot.start((ctx) => {
+  histories.delete(ctx.chat.id); // fresh start clears memory
+  return ctx.reply(
+    "Hey there! Welcome to the shop. I'd love to help you find something — " +
+    "clothing, shoes, accessories, whatever you're after. " +
+    "Or if you'd like to know about shipping, returns, sizing, or our policies, " +
+    "just ask. What can I help you with today?"
+  );
+});
 
 bot.help((ctx) =>
   ctx.reply("Just send me a message describing what you're looking for.")
@@ -37,27 +46,39 @@ bot.on('text', async (ctx) => {
   try {
     await ctx.sendChatAction('typing');
 
-    // 1. Filter extraction.
-    const opts = await withRateRetry(() => extractFilters(question));
+    // Fetch this user's recent conversation (last 3 turns) once.
+    const history = histories.get(ctx.chat.id) ?? [];
 
-    // 2. Hybrid search with extracted filters.
-    const products = await hybridSearch(question, opts);
+    // 1. Interpret — rewrites follow-ups like "cheaper ones" using prior
+    //    turns so the search query is self-contained, AND extracts maxPrice
+    //    / inStockOnly. Returns {searchQuery, maxPrice?, inStockOnly?}.
+    const { searchQuery, ...opts } = await withRateRetry(() =>
+      interpretMessage(question, history)
+    );
+
+    // 2. Hybrid search runs on the REWRITTEN searchQuery — not the raw user
+    //    text — so embeddings benefit from context too.
+    const products = await hybridSearch(searchQuery, opts);
     console.log(
-      `[bot] q="${question}" filters=${JSON.stringify(opts)} ` +
+      `[bot] q="${question}" -> search="${searchQuery}" filters=${JSON.stringify(opts)} ` +
       `retrieved=${products.length}: ${
         products.map((p) => `#${p.id}(s=${p.score.toFixed(2)})`).join(', ') || 'none'
       }`
     );
 
-    // 3. Empty -> short-circuit, skip the reply LLM call.
-    if (products.length === 0) {
-      await ctx.reply("Sorry, we don't have anything matching that. We sell clothing, shoes and accessories — try asking about those!");
-      return;
-    }
+    // (No empty-results short-circuit anymore — shop-info questions
+    // legitimately return 0 products and still need an LLM reply using
+    // the SHOP INFO baked into the system prompt.)
 
-    // 4. Generate the grounded reply.
+    // 3. Generate the grounded reply, with conversation memory.
     await ctx.sendChatAction('typing');
-    const reply = await withRateRetry(() => askLLM(question, products));
+    const reply = await withRateRetry(() => askLLM(question, products, history));
+
+    // Append this turn and trim to the most recent MAX_HISTORY messages.
+    history.push({ role: 'user', content: question });
+    history.push({ role: 'assistant', content: reply });
+    while (history.length > MAX_HISTORY) history.shift();
+    histories.set(ctx.chat.id, history);
 
     try {
       await ctx.reply(reply, { parse_mode: 'Markdown' });

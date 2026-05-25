@@ -5,9 +5,7 @@
   "type": "module",
   "main": "src/demo.js",
   "scripts": {
-    "demo": "node src/demo.js",
     "index": "node src/index.js",
-    "chat": "node src/chat.js",
     "bot": "node src/bot.js"
   },
   "dependencies": {
